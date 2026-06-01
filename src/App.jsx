@@ -1,14 +1,16 @@
-import { useState } from "react";
-
-const initialCustomers = [
-  { id: 1, name: "Maria González", address: "123 Oak St", phone: "787-555-0101", lotSize: "Medium", price: 45, notes: "Has a dog, keep gate closed", lastMowed: "2026-05-20", status: "active" },
-  { id: 2, name: "James Reilly", address: "456 Pine Ave", phone: "787-555-0182", lotSize: "Large", price: 70, notes: "Mow every 2 weeks", lastMowed: "2026-05-15", status: "active" },
-  { id: 3, name: "Sandra Cruz", address: "789 Maple Dr", phone: "787-555-0934", lotSize: "Small", price: 30, notes: "", lastMowed: "2026-05-28", status: "active" },
-];
+import { useState, useEffect } from "react";
 
 const LOT_SIZES = ["Small", "Medium", "Large", "Extra Large"];
 const STATUSES = ["active", "inactive"];
-const empty = { name: "", address: "", phone: "", lotSize: "Medium", price: "", notes: "", lastMowed: "", status: "active" };
+const empty = { name: "", address: "", phone: "", lotSize: "Medium", price: "", notes: "", lastMowed: "", status: "active", balance: 0 };
+
+function useLocalStorage(key, initial) {
+  const [value, setValue] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : initial; } catch { return initial; }
+  });
+  useEffect(() => { localStorage.setItem(key, JSON.stringify(value)); }, [key, value]);
+  return [value, setValue];
+}
 
 function daysSince(dateStr) {
   if (!dateStr) return null;
@@ -23,7 +25,8 @@ function Badge({ days }) {
 }
 
 export default function App() {
-  const [customers, setCustomers] = useState(initialCustomers);
+  const [customers, setCustomers] = useLocalStorage("ev_customers", []);
+  const [payments, setPayments] = useLocalStorage("ev_payments", []);
   const [view, setView] = useState("list");
   const [selected, setSelected] = useState(null);
   const [form, setForm] = useState(empty);
@@ -31,6 +34,8 @@ export default function App() {
   const [filterStatus, setFilterStatus] = useState("all");
   const [editingId, setEditingId] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [payAmount, setPayAmount] = useState("");
+  const [payNote, setPayNote] = useState("");
 
   const filtered = customers.filter(c => {
     const matchSearch = c.name.toLowerCase().includes(search.toLowerCase()) || c.address.toLowerCase().includes(search.toLowerCase());
@@ -38,9 +43,13 @@ export default function App() {
     return matchSearch && matchStatus;
   });
 
+  function getBalance(customerId) {
+    return payments.filter(p => p.customerId === customerId).reduce((sum, p) => sum + p.amount, 0);
+  }
+
   function openAdd() { setForm(empty); setEditingId(null); setView("form"); }
   function openEdit(c) { setForm({ ...c }); setEditingId(c.id); setView("form"); }
-  function openDetail(c) { setSelected(c); setView("detail"); }
+  function openDetail(c) { setSelected(c); setView("detail"); setPayAmount(""); setPayNote(""); }
 
   function saveForm() {
     if (!form.name.trim() || !form.address.trim()) return;
@@ -55,17 +64,35 @@ export default function App() {
 
   function markMowed(id) {
     const today = new Date().toISOString().split("T")[0];
+    const customer = customers.find(c => c.id === id);
+    const price = Number(customer?.price || 0);
+    // Add charge
+    setPayments(ps => [...ps, { id: Date.now(), customerId: id, amount: -price, note: "Mow charge", date: today, type: "charge" }]);
     setCustomers(cs => cs.map(c => c.id === id ? { ...c, lastMowed: today } : c));
     if (selected?.id === id) setSelected(s => ({ ...s, lastMowed: today }));
   }
 
+  function addPayment(customerId) {
+    const amt = Number(payAmount);
+    if (!amt || amt <= 0) return;
+    const today = new Date().toISOString().split("T")[0];
+    setPayments(ps => [...ps, { id: Date.now(), customerId, amount: amt, note: payNote || "Payment received", date: today, type: "payment" }]);
+    setPayAmount("");
+    setPayNote("");
+  }
+
   function deleteCustomer(id) {
     setCustomers(cs => cs.filter(c => c.id !== id));
+    setPayments(ps => ps.filter(p => p.customerId !== id));
     setConfirmDelete(null);
     setView("list");
   }
 
-  const totalRevenue = customers.filter(c => c.status === "active").reduce((s, c) => s + Number(c.price || 0), 0);
+  const totalOwed = customers.reduce((sum, c) => {
+    const bal = getBalance(c.id);
+    return bal < 0 ? sum + Math.abs(bal) : sum;
+  }, 0);
+  const totalRevenue = payments.filter(p => p.type === "payment").reduce((s, p) => s + p.amount, 0);
   const dueCount = customers.filter(c => { const d = daysSince(c.lastMowed); return d === null || d >= 14; }).length;
 
   return (
@@ -81,6 +108,7 @@ export default function App() {
         .btn-white { background: white; color: var(--green); } .btn-white:hover { background: var(--green-pale); }
         .btn-outline { background: transparent; color: var(--green); border: 1.5px solid var(--border); } .btn-outline:hover { background: var(--green-pale); }
         .btn-danger { background: var(--red); color: white; } .btn-danger:hover { background: #a93226; }
+        .btn-success { background: #1a6b2a; color: white; } .btn-success:hover { background: #145220; }
         .btn-sm { padding: 6px 12px; font-size: 13px; }
         .stat-row { display: flex; gap: 16px; padding: 20px 24px 0; flex-wrap: wrap; }
         .stat { background: var(--card); border-radius: 12px; padding: 16px 20px; flex: 1; min-width: 140px; border: 1px solid var(--border); }
@@ -104,6 +132,9 @@ export default function App() {
         .badge { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 20px; }
         .badge.green { background: #d4edda; color: #1a6b2a; } .badge.yellow { background: #fff3cd; color: #856404; }
         .badge.red { background: #f8d7da; color: #842029; } .badge.gray { background: #e9ecef; color: #495057; }
+        .owed-badge { font-size: 13px; font-weight: 700; padding: 3px 10px; border-radius: 20px; }
+        .owed-badge.owes { background: #f8d7da; color: #842029; }
+        .owed-badge.paid { background: #d4edda; color: #1a6b2a; }
         .empty { text-align: center; padding: 60px 24px; color: var(--text-muted); }
         .empty-icon { font-size: 48px; margin-bottom: 12px; }
         .panel { max-width: 560px; margin: 24px auto; background: var(--card); border-radius: 16px; border: 1px solid var(--border); overflow: hidden; }
@@ -115,7 +146,20 @@ export default function App() {
         .detail-icon { font-size: 20px; width: 28px; flex-shrink: 0; }
         .detail-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; }
         .detail-value { font-size: 15px; font-weight: 500; margin-top: 2px; }
-        .action-row { display: flex; gap: 10px; flex-wrap: wrap; padding: 0 24px 24px; max-width: 560px; margin: 0 auto; }
+        .action-row { display: flex; gap: 10px; flex-wrap: wrap; padding: 0 24px 16px; max-width: 560px; margin: 0 auto; }
+        .section-title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 12px; }
+        .payment-box { max-width: 560px; margin: 0 auto 16px; background: var(--card); border-radius: 16px; border: 1px solid var(--border); padding: 20px 24px; }
+        .pay-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+        .pay-input { flex: 1; min-width: 120px; padding: 10px 14px; border-radius: 8px; border: 1.5px solid var(--border); font-family: inherit; font-size: 14px; outline: none; }
+        .pay-input:focus { border-color: var(--green-light); }
+        .payment-history { max-width: 560px; margin: 0 auto 24px; background: var(--card); border-radius: 16px; border: 1px solid var(--border); padding: 20px 24px; }
+        .payment-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+        .payment-item:last-child { border-bottom: none; }
+        .payment-charge { color: var(--red); font-weight: 700; }
+        .payment-credit { color: #1a6b2a; font-weight: 700; }
+        .balance-big { font-size: 32px; font-weight: 700; font-family: 'Playfair Display', serif; }
+        .balance-big.owes { color: var(--red); }
+        .balance-big.paid { color: #1a6b2a; }
         .form-group { margin-bottom: 16px; }
         .form-label { display: block; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 6px; }
         .form-input { width: 100%; padding: 10px 14px; border-radius: 8px; border: 1.5px solid var(--border); font-family: inherit; font-size: 14px; outline: none; }
@@ -127,7 +171,7 @@ export default function App() {
         .modal-title { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
         .modal-text { color: var(--text-muted); font-size: 14px; margin-bottom: 24px; }
         .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
-        @media (max-width: 480px) { .header { padding: 0 16px; } .stat-row, .toolbar, .card-grid { padding-left: 16px; padding-right: 16px; } .form-row { grid-template-columns: 1fr; } .panel { margin: 16px; } }
+        @media (max-width: 480px) { .header { padding: 0 16px; } .stat-row, .toolbar, .card-grid { padding-left: 16px; padding-right: 16px; } .form-row { grid-template-columns: 1fr; } .panel { margin: 16px; } .payment-box, .payment-history, .action-row { margin-left: 16px; margin-right: 16px; } }
       `}</style>
 
       <div className="header">
@@ -136,11 +180,29 @@ export default function App() {
         {view !== "list" && <button className="btn btn-white btn-sm" onClick={() => setView("list")}>← Back</button>}
       </div>
 
+      {/* LIST VIEW */}
       {view === "list" && <>
         <div className="stat-row">
-          <div className="stat"><div className="stat-label">Total Customers</div><div className="stat-value">{customers.length}</div><div className="stat-sub">{customers.filter(c => c.status === "active").length} active</div></div>
-          <div className="stat"><div className="stat-label">Weekly Revenue</div><div className="stat-value">${totalRevenue}</div><div className="stat-sub">from active clients</div></div>
-          <div className="stat"><div className="stat-label">Due for Mow</div><div className="stat-value" style={{ color: dueCount > 0 ? "var(--red)" : "var(--green)" }}>{dueCount}</div><div className="stat-sub">14+ days since last mow</div></div>
+          <div className="stat">
+            <div className="stat-label">Customers</div>
+            <div className="stat-value">{customers.length}</div>
+            <div className="stat-sub">{customers.filter(c => c.status === "active").length} active</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Total Collected</div>
+            <div className="stat-value">${totalRevenue.toFixed(0)}</div>
+            <div className="stat-sub">all time</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Total Owed</div>
+            <div className="stat-value" style={{ color: totalOwed > 0 ? "var(--red)" : "var(--green)" }}>${totalOwed.toFixed(0)}</div>
+            <div className="stat-sub">unpaid balances</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Due for Mow</div>
+            <div className="stat-value" style={{ color: dueCount > 0 ? "var(--red)" : "var(--green)" }}>{dueCount}</div>
+            <div className="stat-sub">14+ days</div>
+          </div>
         </div>
         <div className="toolbar">
           <input className="search" placeholder="🔍  Search by name or address..." value={search} onChange={e => setSearch(e.target.value)} />
@@ -151,27 +213,39 @@ export default function App() {
           ))}
         </div>
         {filtered.length === 0
-          ? <div className="empty"><div className="empty-icon">🌱</div><div>No customers found.</div></div>
+          ? <div className="empty"><div className="empty-icon">🌱</div><div>No customers yet. Tap + Add Customer to get started!</div></div>
           : <div className="card-grid">
-            {filtered.map(c => (
-              <div key={c.id} className={`card${c.status === "inactive" ? " inactive" : ""}`} onClick={() => openDetail(c)}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div className="card-name">{c.name}</div>
-                  <span className="lot-pill">{c.lotSize}</span>
+            {filtered.map(c => {
+              const bal = getBalance(c.id);
+              return (
+                <div key={c.id} className={`card${c.status === "inactive" ? " inactive" : ""}`} onClick={() => openDetail(c)}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div className="card-name">{c.name}</div>
+                    <span className="lot-pill">{c.lotSize}</span>
+                  </div>
+                  <div className="card-addr">📍 {c.address}</div>
+                  <div className="card-row">
+                    <span className="price-tag">${c.price}/mow</span>
+                    <Badge days={daysSince(c.lastMowed)} />
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    {bal < 0
+                      ? <span className="owed-badge owes">Owes ${Math.abs(bal).toFixed(2)}</span>
+                      : <span className="owed-badge paid">✓ Paid up</span>
+                    }
+                  </div>
                 </div>
-                <div className="card-addr">📍 {c.address}</div>
-                <div className="card-row">
-                  <span className="price-tag">${c.price}</span>
-                  <Badge days={daysSince(c.lastMowed)} />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         }
       </>}
 
+      {/* DETAIL VIEW */}
       {view === "detail" && selected && (() => {
         const c = customers.find(x => x.id === selected.id) || selected;
+        const bal = getBalance(c.id);
+        const custPayments = payments.filter(p => p.customerId === c.id).slice().reverse();
         return <>
           <div className="panel">
             <div className="panel-header">
@@ -191,17 +265,59 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              <div className="detail-row">
+                <span className="detail-icon">💰</span>
+                <div>
+                  <div className="detail-label">Balance</div>
+                  <div className={`balance-big ${bal < 0 ? "owes" : "paid"}`}>
+                    {bal < 0 ? `-$${Math.abs(bal).toFixed(2)}` : `+$${bal.toFixed(2)}`}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                    {bal < 0 ? "Customer owes you" : bal === 0 ? "All settled" : "Customer has credit"}
+                  </div>
+                </div>
+              </div>
               {c.notes && <div className="detail-row"><span className="detail-icon">📝</span><div><div className="detail-label">Notes</div><div className="detail-value">{c.notes}</div></div></div>}
             </div>
           </div>
+
           <div className="action-row">
             <button className="btn btn-primary" onClick={() => markMowed(c.id)}>✅ Mark as Mowed Today</button>
             <button className="btn btn-outline" onClick={() => openEdit(c)}>✏️ Edit</button>
             <button className="btn btn-danger btn-sm" onClick={() => setConfirmDelete(c)}>🗑 Delete</button>
           </div>
+
+          {/* Payment Box */}
+          <div className="payment-box">
+            <div className="section-title">💳 Record Payment</div>
+            <div className="pay-row">
+              <input className="pay-input" type="number" placeholder="Amount ($)" value={payAmount} onChange={e => setPayAmount(e.target.value)} />
+              <input className="pay-input" placeholder="Note (optional)" value={payNote} onChange={e => setPayNote(e.target.value)} />
+              <button className="btn btn-success" onClick={() => addPayment(c.id)}>+ Add</button>
+            </div>
+          </div>
+
+          {/* Payment History */}
+          {custPayments.length > 0 && (
+            <div className="payment-history">
+              <div className="section-title">📋 Payment History</div>
+              {custPayments.map(p => (
+                <div key={p.id} className="payment-item">
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{p.note}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{p.date}</div>
+                  </div>
+                  <span className={p.type === "charge" ? "payment-charge" : "payment-credit"}>
+                    {p.type === "charge" ? `-$${Math.abs(p.amount).toFixed(2)}` : `+$${p.amount.toFixed(2)}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </>;
       })()}
 
+      {/* FORM VIEW */}
       {view === "form" && (
         <div className="panel">
           <div className="panel-header">
